@@ -1,6 +1,18 @@
 # API Migration Plan: Rails → NestJS
 
-Status: **decisions confirmed — ready to start implementation (see Phase 0)**
+## Status
+
+Update this table as work happens — it's the source of truth for where the migration actually stands, not just what was planned.
+
+| Phase | Description | Status | Notes |
+|---|---|---|---|
+| 0 | Scaffold (`api-nest/` boots, own DB, initial TypeORM migration, CI) | Not started | |
+| 1 | Read-only endpoints (`facilities`, `courts`) | Not started | |
+| 2 | Sessions (full lifecycle + S3 presigner) | Not started | |
+| 3 | Recorder integration (JWT guard, heartbeat/webhook, clip job wiring) | Not started | |
+| 4 | Billing (payments/checkout, Stripe webhook linked to sessions) | Not started | |
+| 5 | Parity test pass | Not started | |
+| 6 | Cutover (Docker Compose + GitHub Actions live, `api/` retired) | Not started | |
 
 ## Decisions
 
