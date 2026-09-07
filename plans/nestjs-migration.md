@@ -135,13 +135,13 @@ Kamal is framework-agnostic (it's a general SSH+Docker deploy tool, not Rails-sp
 3. **Recorder integration** — JWT guard + `heartbeat`/`webhook`, the outbound `RecorderClient`, and wiring `stop` → BullMQ clip-request job → recorder call (closing the gap where this is currently a no-op).
 4. **Billing** — `payments`/`billing` checkout + Stripe webhook verification, with `checkout.session.completed` now updating session/payment state (closing the current no-op gap).
 5. **Parity test pass** — port the existing Rails controller tests as Nest e2e tests, plus new tests for facilities/payments; confirm identical request/response shapes for the frontend and the recorder service's contract.
-6. **Cutover** — stand up the Docker Compose stack + GitHub Actions deploy workflow for `api-nest/`, migrate production data from Rails' database into the TypeORM-migrated one (see note below), point DNS/traffic at it, retire the Rails Kamal deploy, delete `api/`, rename `api-nest/` → `api/`.
+6. **Cutover** — stand up the Docker Compose stack + GitHub Actions deploy workflow for `api-nest/`, point DNS/traffic at it, retire the Rails Kamal deploy, delete `api/`, rename `api-nest/` → `api/`. No production data to migrate (see note below).
 
 ## Notes on the confirmed decisions
 
 - **No strangler-fig proxy** — Rails (`api/`) keeps serving all production traffic unchanged until `api-nest/` reaches full parity in phase 5; there's no intermediate state where some requests hit Nest and some hit Rails.
 - **No shared database during development** — Rails is never run alongside Nest, so `api-nest/` builds and owns its own database and TypeORM migration history from phase 0 onward, independent of the live Rails database. This avoids two migration frameworks ever touching the same schema at once.
-- **Cutover needs a one-time data migration** — since `api-nest/`'s database has its own (empty) history, moving to production means copying real data out of Rails' Postgres database into the TypeORM-migrated one as part of phase 6 (e.g. `pg_dump --data-only` from the old database, `pg_restore`/`COPY` into the new one, once the TypeORM schema is confirmed structurally compatible). If there's no meaningful production data yet, this step may turn out to be a non-issue — worth confirming before phase 6.
+- **No data migration needed at cutover** — there's no existing production database with real data to carry over, so `api-nest/`'s database simply becomes the production database at cutover with nothing to import.
 - **Gap fixes touch behavior, not just framework** — implementing real `facilities`/`payments` controllers and linking the Stripe webhook to sessions are functional changes, not pure ports. They'll get their own tests rather than being folded silently into "parity."
 
 ## Non-goals
