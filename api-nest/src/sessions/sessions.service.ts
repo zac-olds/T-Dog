@@ -1,10 +1,16 @@
 import { randomBytes } from 'node:crypto';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { InjectQueue } from '@nestjs/bullmq';
 import { Repository } from 'typeorm';
+import { Queue } from 'bullmq';
 import { Session } from '../entities/session.entity.js';
 import { Court } from '../entities/court.entity.js';
 import { S3PresignerService } from '../common/s3/s3-presigner.service.js';
+import {
+  CLIP_REQUEST_QUEUE,
+  ClipRequestJobData,
+} from '../jobs/clip-request/clip-request.constants.js';
 import { CreateSessionDto } from './dto/create-session.dto.js';
 
 @Injectable()
@@ -13,6 +19,8 @@ export class SessionsService {
     @InjectRepository(Session) private readonly sessions: Repository<Session>,
     @InjectRepository(Court) private readonly courts: Repository<Court>,
     private readonly s3Presigner: S3PresignerService,
+    @InjectQueue(CLIP_REQUEST_QUEUE)
+    private readonly clipRequestQueue: Queue<ClipRequestJobData>,
   ) {}
 
   async create(dto: CreateSessionDto) {
@@ -51,7 +59,11 @@ export class SessionsService {
     session.endedAt = new Date();
     session.status = 'processing';
     await this.sessions.save(session);
-    // Phase 3 wires this up to actually notify the recorder to clip.
+    await this.clipRequestQueue.add(
+      'request-clip',
+      { sessionId: session.id },
+      { removeOnComplete: true, removeOnFail: 50 },
+    );
     return { id: session.id, status: session.status, ok: true };
   }
 
