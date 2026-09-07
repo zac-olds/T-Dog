@@ -1,6 +1,16 @@
 # API Migration Plan: Rails → NestJS
 
-Status: **draft — open decisions below need answers before implementation starts**
+Status: **decisions confirmed — ready to start implementation (see Phase 0)**
+
+## Decisions
+
+| Question | Decision |
+|---|---|
+| Cutover strategy | Parallel build in a new folder; swap in once at full parity (no strangler-fig proxy) |
+| ORM | TypeORM |
+| Known gaps (missing facilities/payments controllers, clip job never enqueued, Stripe webhook not linked to sessions) | Fix during migration, not replicated as-is |
+| Repo layout during development | New `api-nest/` folder alongside `api/`; `api/` is deleted and `api-nest/` renamed to `api/` at cutover |
+| Deployment (assumed, not explicitly asked) | Keep Kamal — same Docker-based deploy, just a Node Dockerfile instead of a Rails one. Flag if this is wrong. |
 
 ## Goal
 
@@ -55,38 +65,42 @@ Kamal (Docker-based) + Thruster in front of Puma. Two independent, drifted CI wo
 
 ---
 
-## Target NestJS architecture (proposed)
+## Target NestJS architecture
 
 ```
-api/                          # replaces the Rails app in place (see Option A/B below)
+api-nest/                     # new folder, coexists with api/ until cutover
   src/
-    facilities/               # controller + service
+    facilities/                # controller + service — implemented for real (gap fix)
     courts/
     sessions/
-    recorders/                # heartbeat + webhook, guarded by RecorderAuthGuard
-    billing/                  # stripe checkout
-    stripe-webhooks/
+    recorders/                 # heartbeat + webhook, guarded by RecorderAuthGuard
+    payments/                  # implemented for real (gap fix) — supersedes ad-hoc billing-only controller
+    billing/                   # stripe checkout, nested under payments per the Rails route shape
+    stripe-webhooks/           # now links checkout.session.completed to a session/payment (gap fix)
+    jobs/
+      clip-request/            # BullMQ processor, actually enqueued from sessions.stop() (gap fix)
     common/
-      guards/                 # JWT guard(s) for recorder auth
-      jwt/                    # sign/verify helper, mirrors JwtService
-      s3/                     # presigner service
-      recorder-client/        # HTTP client to the external recorder service
+      guards/                  # JWT guard(s) for recorder auth
+      jwt/                     # sign/verify helper, mirrors JwtService
+      s3/                      # presigner service
+      recorder-client/         # HTTP client to the external recorder service
+    entities/                  # TypeORM entities: Facility, Court, Camera, Session
     app.module.ts
     main.ts
-  test/                       # e2e (supertest) — mirrors today's controller tests
+  test/                        # e2e (supertest) — mirrors today's controller tests
 ```
 
 - **Framework**: NestJS (Express adapter — no need for Fastify here, nothing perf-sensitive in this API).
-- **ORM**: needs a decision (see Open Decisions). Either way, we reuse the *existing* Postgres schema/migrations rather than regenerating it — this is a backend swap, not a data model change.
+- **ORM**: TypeORM, entities mapped onto the *existing* Postgres schema/tables — this is a backend swap, not a data model change. TypeORM migrations get initialized from the current schema rather than regenerated from scratch, so both apps can point at the same database during the parallel-build period without drift.
 - **Validation**: `class-validator` + `class-transformer` DTOs per endpoint (Rails currently does zero param validation — this is a strict improvement, not scope creep, since it's required to accept requests at all in Nest's idiomatic style).
 - **Auth**: a small `JwtService` (using `@nestjs/jwt` or the `jsonwebtoken` package directly) replicating HS256 encode/decode with the same claims shape, plus a `RecorderAuthGuard` replicating `authenticate_recorder!`. Same shared secret env var (`JWT_SECRET`) so recorder-side tooling doesn't change.
-- **Background jobs**: BullMQ + Redis replaces Sidekiq (same Redis instance, conceptually equivalent). Only one job to port: `ClipRequestJob`. Decision needed on whether to finally wire it up (see Open Decisions — "known gaps").
+- **Background jobs**: BullMQ + Redis replaces Sidekiq (same Redis instance, conceptually equivalent). `ClipRequestJob` is ported *and* actually wired up: `sessions.stop()` enqueues it, the processor calls the recorder client.
 - **Config**: `@nestjs/config` reading the same env var names documented in `api/README.md`, so ops/deploy scripts and CI secrets don't need to change.
 - **CORS**: Nest's built-in `enableCors()`, same allowed origin.
-- **Stripe**: official `stripe` npm package, same webhook signature verification pattern.
+- **Stripe**: official `stripe` npm package, same webhook signature verification pattern; `checkout.session.completed` now updates the associated session/payment record instead of being a no-op.
 - **AWS S3**: `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner`.
-- **Testing**: Jest (Nest's default) for unit tests, `supertest` for e2e/controller-level tests — mapped 1:1 from the existing Rails controller tests so coverage doesn't regress.
-- **Deployment**: Kamal supports arbitrary Dockerized services, so it can stay if desired — this is a Dockerfile change, not a Kamal replacement (see Open Decisions).
+- **Testing**: Jest (Nest's default) for unit tests, `supertest` for e2e/controller-level tests — mapped 1:1 from the existing Rails controller tests so coverage doesn't regress, plus new tests for the previously-missing facilities/payments controllers.
+- **Deployment**: Kamal stays; only the Dockerfile changes (Node base image instead of Ruby).
 
 ## Rails → Nest construct mapping
 
@@ -104,24 +118,19 @@ api/                          # replaces the Rails app in place (see Option A/B 
 
 ## Migration phases
 
-1. **Scaffold** — new Nest app boots, connects to the same Postgres DB (read-only smoke test), health check endpoint, CI wired up (lint + test + build), CORS + config plumbing in place. No business routes yet.
-2. **Read-only endpoints** — `facilities` (implementing it for real, since the Rails route never worked), `courts` (incl. `?slug=` filter and nested camera serialization).
-3. **Sessions** — full lifecycle (`create`, `show`, `stop`, `presigned_download`), including the S3 presigner service.
-4. **Recorder integration** — JWT guard + `heartbeat`/`webhook`, plus the outbound `RecorderClient` and (decision needed) actually wiring `stop` → clip-request job → recorder call.
-5. **Billing** — Stripe checkout + webhook verification. Decide whether to close the "webhook does nothing" gap by linking `checkout.session.completed` to a session/payment record.
-6. **Parity test pass** — port/replicate the existing Rails controller tests as Nest e2e tests; confirm identical request/response shapes against the frontend's (currently nonexistent) expectations.
-7. **Cutover** — see Option A/B under Open Decisions.
+0. **Scaffold** — `api-nest/` boots, connects to the same Postgres DB (read-only smoke test), health check endpoint, CI wired up (lint + test + build), CORS + config plumbing in place, TypeORM configured against the existing schema. No business routes yet.
+1. **Read-only endpoints** — `facilities` (new, real implementation — the Rails route never worked), `courts` (incl. `?slug=` filter and nested camera serialization).
+2. **Sessions** — full lifecycle (`create`, `show`, `stop`, `presigned_download`), including the S3 presigner service.
+3. **Recorder integration** — JWT guard + `heartbeat`/`webhook`, the outbound `RecorderClient`, and wiring `stop` → BullMQ clip-request job → recorder call (closing the gap where this is currently a no-op).
+4. **Billing** — `payments`/`billing` checkout + Stripe webhook verification, with `checkout.session.completed` now updating session/payment state (closing the current no-op gap).
+5. **Parity test pass** — port the existing Rails controller tests as Nest e2e tests, plus new tests for facilities/payments; confirm identical request/response shapes for the frontend and the recorder service's contract.
+6. **Cutover** — point deploy (Kamal) at `api-nest/`'s Dockerfile, delete `api/`, rename `api-nest/` → `api/`.
 
-## Open decisions (need your input before implementation starts)
+## Notes on the confirmed decisions
 
-1. **Cutover strategy**: (a) build the whole Nest app in parallel (e.g. `api-nest/` or a feature branch) and swap it in behind the same reverse proxy once it has full parity, or (b) migrate module-by-module behind a router that proxies unmigrated routes to the still-running Rails app (strangler fig). Given the API's small surface area (5 real controllers), (a) is likely simpler and is what this plan assumes unless you'd rather do (b).
-2. **ORM**: TypeORM (closer to ActiveRecord's feel, migrations-as-code) vs. Prisma (stronger typing/DX, separate schema file, different migration workflow). No strong lean from the codebase either way — this is a preference call.
-3. **Known gaps** — do we fix them as part of the migration, or replicate them as-is for a pure like-for-like port?
-   - `facilities`/`payments` routes exist but have no controller (500 today).
-   - `Session#stop` never actually enqueues the clip job.
-   - Stripe `checkout.session.completed` webhook doesn't link back to a session.
-4. **Deployment target**: keep Kamal (just point it at a Node Dockerfile instead of the Rails one), or move to something else? No signal in the repo that Kamal itself needs to change — recommend keeping it unless you have a reason to switch.
-5. **Repo layout**: replace `api/` in place once cutover happens, or land the new service under a different folder name (e.g. `api-nest/`) so both can coexist during development and CI can run both until cutover? Given decision #1, if we go with (a) a parallel build, a temporary separate folder is probably necessary regardless of the final name.
+- **No strangler-fig proxy** — Rails (`api/`) keeps serving all traffic unchanged until `api-nest/` reaches full parity in phase 5; there's no intermediate state where some requests hit Nest and some hit Rails.
+- **Shared database during development** — both apps read/write the same Postgres instance during phases 0–5, so schema changes (e.g. anything needed for the payments/webhook gap fix) must be written as migrations either app can pick up, or coordinated so only one side owns them until cutover. This needs a concrete answer once we get to phase 4 (see follow-up work below).
+- **Gap fixes touch behavior, not just framework** — implementing real `facilities`/`payments` controllers and linking the Stripe webhook to sessions are functional changes, not pure ports. They'll get their own tests rather than being folded silently into "parity."
 
 ## Non-goals
 
