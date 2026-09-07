@@ -8,6 +8,7 @@ Status: **decisions confirmed — ready to start implementation (see Phase 0)**
 |---|---|
 | Cutover strategy | Parallel build in a new folder; swap in once at full parity (no strangler-fig proxy) |
 | ORM | TypeORM |
+| Database migrations | TypeORM owns migrations from day one — `api-nest/` runs against its own database with its own migration history, not the live Rails-managed one. Rails is never run alongside Nest, so there's no simultaneous-ownership problem to coordinate. |
 | Known gaps (missing facilities/payments controllers, clip job never enqueued, Stripe webhook not linked to sessions) | Fix during migration, not replicated as-is |
 | Repo layout during development | New `api-nest/` folder alongside `api/`; `api/` is deleted and `api-nest/` renamed to `api/` at cutover |
 | Deployment | Drop Kamal. Use Docker Compose (app + Postgres + Redis + reverse proxy) on the target server, deployed via a GitHub Actions workflow that SSHes in, pulls the new image, and runs `docker compose up -d`. |
@@ -91,7 +92,7 @@ api-nest/                     # new folder, coexists with api/ until cutover
 ```
 
 - **Framework**: NestJS (Express adapter — no need for Fastify here, nothing perf-sensitive in this API).
-- **ORM**: TypeORM, entities mapped onto the *existing* Postgres schema/tables — this is a backend swap, not a data model change. TypeORM migrations get initialized from the current schema rather than regenerated from scratch, so both apps can point at the same database during the parallel-build period without drift.
+- **ORM**: TypeORM, with its own migration history from the start (`synchronize: false` always — no schema auto-sync). `api-nest/` runs against its own database (local/dev/staging, separate from Rails' production database) throughout development, since Rails is never run at the same time as Nest. The initial TypeORM migration recreates the current 4-table schema (`facilities`, `courts`, `cameras`, `sessions`) to match Rails' `schema.rb`; later migrations add whatever the phase 4 gap fixes need (e.g. a `payments` table). This is a data-model-preserving rewrite, not a redesign — the recreated schema should be structurally identical to what Rails has today, plus additive changes.
 - **Validation**: `class-validator` + `class-transformer` DTOs per endpoint (Rails currently does zero param validation — this is a strict improvement, not scope creep, since it's required to accept requests at all in Nest's idiomatic style).
 - **Auth**: a small `JwtService` (using `@nestjs/jwt` or the `jsonwebtoken` package directly) replicating HS256 encode/decode with the same claims shape, plus a `RecorderAuthGuard` replicating `authenticate_recorder!`. Same shared secret env var (`JWT_SECRET`) so recorder-side tooling doesn't change.
 - **Background jobs**: BullMQ + Redis replaces Sidekiq (same Redis instance, conceptually equivalent). `ClipRequestJob` is ported *and* actually wired up: `sessions.stop()` enqueues it, the processor calls the recorder client.
@@ -128,18 +129,19 @@ Kamal is framework-agnostic (it's a general SSH+Docker deploy tool, not Rails-sp
 
 ## Migration phases
 
-0. **Scaffold** — `api-nest/` boots, connects to the same Postgres DB (read-only smoke test), health check endpoint, CI wired up (lint + test + build), CORS + config plumbing in place, TypeORM configured against the existing schema. No business routes yet.
+0. **Scaffold** — `api-nest/` boots against its own Postgres database, health check endpoint, CI wired up (lint + test + build), CORS + config plumbing in place, TypeORM initial migration recreates the `facilities`/`courts`/`cameras`/`sessions` schema from scratch. No business routes yet.
 1. **Read-only endpoints** — `facilities` (new, real implementation — the Rails route never worked), `courts` (incl. `?slug=` filter and nested camera serialization).
 2. **Sessions** — full lifecycle (`create`, `show`, `stop`, `presigned_download`), including the S3 presigner service.
 3. **Recorder integration** — JWT guard + `heartbeat`/`webhook`, the outbound `RecorderClient`, and wiring `stop` → BullMQ clip-request job → recorder call (closing the gap where this is currently a no-op).
 4. **Billing** — `payments`/`billing` checkout + Stripe webhook verification, with `checkout.session.completed` now updating session/payment state (closing the current no-op gap).
 5. **Parity test pass** — port the existing Rails controller tests as Nest e2e tests, plus new tests for facilities/payments; confirm identical request/response shapes for the frontend and the recorder service's contract.
-6. **Cutover** — stand up the Docker Compose stack + GitHub Actions deploy workflow for `api-nest/`, point DNS/traffic at it, retire the Rails Kamal deploy, delete `api/`, rename `api-nest/` → `api/`.
+6. **Cutover** — stand up the Docker Compose stack + GitHub Actions deploy workflow for `api-nest/`, migrate production data from Rails' database into the TypeORM-migrated one (see note below), point DNS/traffic at it, retire the Rails Kamal deploy, delete `api/`, rename `api-nest/` → `api/`.
 
 ## Notes on the confirmed decisions
 
-- **No strangler-fig proxy** — Rails (`api/`) keeps serving all traffic unchanged until `api-nest/` reaches full parity in phase 5; there's no intermediate state where some requests hit Nest and some hit Rails.
-- **Shared database during development** — both apps read/write the same Postgres instance during phases 0–5, so schema changes (e.g. anything needed for the payments/webhook gap fix) must be written as migrations either app can pick up, or coordinated so only one side owns them until cutover. This needs a concrete answer once we get to phase 4 (see follow-up work below).
+- **No strangler-fig proxy** — Rails (`api/`) keeps serving all production traffic unchanged until `api-nest/` reaches full parity in phase 5; there's no intermediate state where some requests hit Nest and some hit Rails.
+- **No shared database during development** — Rails is never run alongside Nest, so `api-nest/` builds and owns its own database and TypeORM migration history from phase 0 onward, independent of the live Rails database. This avoids two migration frameworks ever touching the same schema at once.
+- **Cutover needs a one-time data migration** — since `api-nest/`'s database has its own (empty) history, moving to production means copying real data out of Rails' Postgres database into the TypeORM-migrated one as part of phase 6 (e.g. `pg_dump --data-only` from the old database, `pg_restore`/`COPY` into the new one, once the TypeORM schema is confirmed structurally compatible). If there's no meaningful production data yet, this step may turn out to be a non-issue — worth confirming before phase 6.
 - **Gap fixes touch behavior, not just framework** — implementing real `facilities`/`payments` controllers and linking the Stripe webhook to sessions are functional changes, not pure ports. They'll get their own tests rather than being folded silently into "parity."
 
 ## Non-goals
