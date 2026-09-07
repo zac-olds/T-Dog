@@ -2,7 +2,21 @@
 
 NestJS rewrite of the T-Dog API, replacing `../api` (Rails). See [`../plans/nestjs-migration.md`](../plans/nestjs-migration.md) for the full migration plan, decisions, and phase-by-phase status.
 
-**Current status: Phase 0 (scaffold) only.** There are no business routes yet — just app bootstrap, database connectivity, and a health check. Don't point the frontend at this yet.
+**Current status: Phase 1.** `facilities` and `courts` are read-only and implemented; everything else (`sessions`, `recorders`, `payments`) is still to come. Don't point the frontend at this yet.
+
+## API (implemented so far, all under `/v1`)
+
+| Route | Notes |
+|---|---|
+| `GET /facilities` | List (up to 50), `{ id, name, slug }` each |
+| `GET /facilities/:id` | Single facility + its courts (`{ id, name, slug }` each); 404 if not found |
+| `GET /courts` | List (up to 50), `{ id, name, slug }` each — no camera info |
+| `GET /courts?slug=...` | Filtered by slug, includes `facilityId` and `camera` (`null` if the court has none) |
+| `GET /courts/:id` | Full court detail + `camera`; 404 if not found |
+
+`GET /health` is the one route not under `/v1` (ops check, not part of the API contract).
+
+**Deviation from Rails' `courts#index`**: the Rails controller returns bare positional arrays (`[[1, "Court 1", "court-1"], ...]`) for the no-slug case, via `Court.limit(50).pluck(...)`, which is inconsistent with every other endpoint's object-shaped JSON. That looks like an artifact of using `pluck` rather than an intentional contract — nothing consumes this API yet (the frontend isn't wired up), so there's no compatibility reason to replicate it. This app returns `{ id, name, slug }` objects in both the filtered and unfiltered cases instead.
 
 ## Requirements
 
@@ -56,13 +70,16 @@ npm run test:e2e    # e2e tests (vitest + supertest), needs a running Postgres
 
 ```
 src/
-  entities/       TypeORM entities (Facility, Court, Camera, Session)
-  migrations/     TypeORM migrations
-  config/         env var validation
-  health/         GET /health
-  data-source.ts  standalone TypeORM DataSource used by the migration CLI
+  entities/         TypeORM entities (Facility, Court, Camera, Session)
+  migrations/       TypeORM migrations
+  config/           env var validation
+  health/           GET /health
+  facilities/       GET /v1/facilities, /v1/facilities/:id
+  courts/           GET /v1/courts, /v1/courts/:id
+  data-source.ts    standalone TypeORM DataSource used by the migration CLI
+  configure-app.ts  shared app setup (global prefix, CORS, validation) used by main.ts and e2e tests
   app.module.ts
   main.ts
 ```
 
-Business modules (`facilities`, `courts`, `sessions`, `recorders`, `payments`, etc.) land in later phases — see the migration plan.
+Remaining modules (`sessions`, `recorders`, `payments`, `stripe-webhooks`) land in later phases — see the migration plan.

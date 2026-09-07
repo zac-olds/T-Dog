@@ -8,8 +8,8 @@ Update this table as work happens — it's the source of truth for where the mig
 
 | Phase | Description | Status | Notes |
 |---|---|---|---|
-| 0 | Scaffold (`api-nest/` boots, own DB, initial TypeORM migration, CI) | In review | PR #2: `nestjs/phase-0-scaffold` → `feature/nestjs-migration`. CI green. Verified locally: build, lint, migration up/down, app boot + `/health` against a real Postgres, unit + e2e tests all pass. |
-| 1 | Read-only endpoints (`facilities`, `courts`) | Not started | |
+| 0 | Scaffold (`api-nest/` boots, own DB, initial TypeORM migration, CI) | Merged | PR #2, merged into `feature/nestjs-migration`. |
+| 1 | Read-only endpoints (`facilities`, `courts`) | In review | Branch `nestjs/phase-1-read-endpoints` → `feature/nestjs-migration`. `facilities` implemented for real (gap fix). Deviated from Rails' `courts#index`: returns objects instead of positional arrays for the no-slug case — see `api-nest/README.md`. Verified locally: build, lint, unit + e2e tests (seeded against a real Postgres) all pass, manual curl smoke test of all 5 routes + the `/health` prefix bypass. |
 | 2 | Sessions (full lifecycle + S3 presigner) | Not started | |
 | 3 | Recorder integration (JWT guard, heartbeat/webhook, clip job wiring) | Not started | |
 | 4 | Billing (payments/checkout, Stripe webhook linked to sessions) | Not started | |
