@@ -36,6 +36,10 @@ jobs:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/tdog_nest_test
       PORT: 3000
       CORS_ORIGIN: http://localhost:5173
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: fake
+      AWS_SECRET_ACCESS_KEY: fake
+      S3_BUCKET: fake
 
     steps:
       - uses: actions/checkout@v4

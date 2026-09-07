@@ -9,8 +9,8 @@ Update this table as work happens — it's the source of truth for where the mig
 | Phase | Description | Status | Notes |
 |---|---|---|---|
 | 0 | Scaffold (`api-nest/` boots, own DB, initial TypeORM migration, CI) | Merged | PR #2, merged into `feature/nestjs-migration`. |
-| 1 | Read-only endpoints (`facilities`, `courts`) | In review | Branch `nestjs/phase-1-read-endpoints` → `feature/nestjs-migration`. `facilities` implemented for real (gap fix). Deviated from Rails' `courts#index`: returns objects instead of positional arrays for the no-slug case — see `api-nest/README.md`. Verified locally: build, lint, unit + e2e tests (seeded against a real Postgres) all pass, manual curl smoke test of all 5 routes + the `/health` prefix bypass. |
-| 2 | Sessions (full lifecycle + S3 presigner) | Not started | |
+| 1 | Read-only endpoints (`facilities`, `courts`) | Merged | PR #3, merged into `feature/nestjs-migration`. `facilities` implemented for real (gap fix). Deviated from Rails' `courts#index`: returns objects instead of positional arrays for the no-slug case — see `api-nest/README.md`. |
+| 2 | Sessions (full lifecycle + S3 presigner) | In review | Branch `nestjs/phase-2-sessions` → `feature/nestjs-migration`. `stop` matches Rails' current no-op (doesn't enqueue a clip job yet — that's Phase 3, on purpose). `create`/`stop` use `@HttpCode(200)` to match Rails' plain `render json:` (Nest defaults POST to 201). Established (retroactively covering Phase 1 too): JSON keys are camelCase, not Rails' snake_case — see `api-nest/README.md`. Verified locally: build, lint, unit + e2e tests (full create→show→stop→presigned_download lifecycle against a real Postgres, including an actual S3 URL-signing call with fake credentials) all pass, plus a manual curl smoke test. |
 | 3 | Recorder integration (JWT guard, heartbeat/webhook, clip job wiring) | Not started | |
 | 4 | Billing (payments/checkout, Stripe webhook linked to sessions) | Not started | |
 | 5 | Parity test pass | Not started | |
