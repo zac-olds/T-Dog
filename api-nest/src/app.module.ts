@@ -3,6 +3,8 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { validate } from './config/env.validation.js';
 import { HealthModule } from './health/health.module.js';
+import { FacilitiesModule } from './facilities/facilities.module.js';
+import { CourtsModule } from './courts/courts.module.js';
 import { Facility } from './entities/facility.entity.js';
 import { Court } from './entities/court.entity.js';
 import { Camera } from './entities/camera.entity.js';
@@ -24,6 +26,8 @@ import { Session } from './entities/session.entity.js';
       }),
     }),
     HealthModule,
+    FacilitiesModule,
+    CourtsModule,
   ],
 })
 export class AppModule {}
