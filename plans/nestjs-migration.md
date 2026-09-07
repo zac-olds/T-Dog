@@ -4,9 +4,11 @@
 
 Update this table as work happens — it's the source of truth for where the migration actually stands, not just what was planned.
 
+**Branching**: each phase gets its own branch and PR, merged into the integration branch `feature/nestjs-migration` — not `main`. `main` stays untouched by the (incomplete) rewrite until phase 6 (cutover), when `feature/nestjs-migration` gets PR'd into `main` in one shot.
+
 | Phase | Description | Status | Notes |
 |---|---|---|---|
-| 0 | Scaffold (`api-nest/` boots, own DB, initial TypeORM migration, CI) | In review | PR: `nestjs/phase-0-scaffold`. Verified locally: build, lint, migration up/down, app boot + `/health` against a real Postgres, unit + e2e tests all pass. |
+| 0 | Scaffold (`api-nest/` boots, own DB, initial TypeORM migration, CI) | In review | PR #2: `nestjs/phase-0-scaffold` → `feature/nestjs-migration`. CI green. Verified locally: build, lint, migration up/down, app boot + `/health` against a real Postgres, unit + e2e tests all pass. |
 | 1 | Read-only endpoints (`facilities`, `courts`) | Not started | |
 | 2 | Sessions (full lifecycle + S3 presigner) | Not started | |
 | 3 | Recorder integration (JWT guard, heartbeat/webhook, clip job wiring) | Not started | |
