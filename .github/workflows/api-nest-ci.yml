@@ -32,6 +32,15 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/tdog_nest_test
       PORT: 3000
@@ -40,6 +49,10 @@ jobs:
       AWS_ACCESS_KEY_ID: fake
       AWS_SECRET_ACCESS_KEY: fake
       S3_BUCKET: fake
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: test-jwt-secret
+      RECORDER_URL: http://localhost:4999
+      APP_BASE_URL: http://localhost:3000
 
     steps:
       - uses: actions/checkout@v4

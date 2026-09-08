@@ -3,11 +3,16 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Session } from '../entities/session.entity.js';
 import { Court } from '../entities/court.entity.js';
 import { S3Module } from '../common/s3/s3.module.js';
+import { ClipRequestModule } from '../jobs/clip-request/clip-request.module.js';
 import { SessionsController } from './sessions.controller.js';
 import { SessionsService } from './sessions.service.js';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Session, Court]), S3Module],
+  imports: [
+    TypeOrmModule.forFeature([Session, Court]),
+    S3Module,
+    ClipRequestModule,
+  ],
   controllers: [SessionsController],
   providers: [SessionsService],
 })

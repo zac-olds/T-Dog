@@ -2,7 +2,7 @@
 
 NestJS rewrite of the T-Dog API, replacing `../api` (Rails). See [`../plans/nestjs-migration.md`](../plans/nestjs-migration.md) for the full migration plan, decisions, and phase-by-phase status.
 
-**Current status: Phase 2.** `facilities`, `courts`, and `sessions` are implemented; `recorders` and `payments` are still to come. Don't point the frontend at this yet.
+**Current status: Phase 3.** `facilities`, `courts`, `sessions`, and `recorders` are implemented; `payments`/Stripe webhooks are still to come. Don't point the frontend at this yet.
 
 ## API (implemented so far, all under `/v1`)
 
@@ -15,10 +15,21 @@ NestJS rewrite of the T-Dog API, replacing `../api` (Rails). See [`../plans/nest
 | `GET /courts/:id` | Full court detail + `camera`; 404 if not found |
 | `POST /sessions` | Body `{ courtId, userContact? }`. Creates a session (`status: "active"`), returns `{ id, token, status, startedAt }`. 404 if the court doesn't exist. Returns **200**, not Nest's default 201 — matches Rails' plain `render json:` |
 | `GET /sessions/:id` | Full session record; 404 if not found |
-| `POST /sessions/:id/stop` | Sets `status: "processing"`, `endedAt: now`. Returns `{ id, status, ok: true }` (200). Doesn't yet notify the recorder — that's Phase 3, matching Rails' current behavior (the enqueue call is commented out there too) |
+| `POST /sessions/:id/stop` | Sets `status: "processing"`, `endedAt: now`, and enqueues a clip-request job for the recorder (200) |
 | `GET /sessions/:id/presigned_download` | Presigned S3 GET URL if `s3Key` is set, else 404 |
+| `POST /recorders/heartbeat` | Requires a recorder JWT (`Authorization: Bearer <token>`, `role: "recorder"`). Returns `{ ok: true, time }` (200) |
+| `POST /recorders/webhook` | Requires a recorder JWT. Body (external contract, snake_case): `{ event, session_id?, s3_key?, duration_s? }`. On `event: "clip_uploaded"`, updates the session (`status: "delivered"`, `s3Key`, `durationS`) — 404 if the session doesn't exist. Other event values are accepted as no-ops (200), matching Rails' `case` statement |
 
 `GET /health` is the one route not under `/v1` (ops check, not part of the API contract).
+
+## Recorder integration (Phase 3)
+
+- **Auth**: a shared-secret JWT (`JWT_SECRET`, HS256, via `@nestjs/jwt`) in both directions, mirroring Rails' `JwtService`:
+  - Recorder → API: `RecorderAuthGuard` (`src/common/guards/`) checks `Authorization: Bearer <token>` has `role: "recorder"` on both `recorders` routes. Missing/invalid/wrong-role → 401 (matching Rails' `head :unauthorized`, not Nest's guard default of 403).
+  - API → Recorder: `RecorderClientService` (`src/common/recorder-client/`) mints a `role: "rails"` token when calling out to the recorder.
+- **Outbound call**: `POST /sessions/:id/stop` enqueues a BullMQ job (`src/jobs/clip-request/`, queue name `clip-request`) instead of calling the recorder inline — matching Rails' `ActiveJob`/Sidekiq pattern. The job processor loads the session (with its court's camera) and calls `RecorderClientService.requestClip`, which `POST`s to `${RECORDER_URL}/api/clip`.
+- **Outbound wire format stays snake_case** (`session_id`, `court_id`, `rtsp_url`, ...) — that's the external recorder service's contract, not something this app controls, so it's exempt from the camelCase convention below.
+- **Closes the Phase 2 gap**: Rails' `stop` action has the `ClipRequestJob.perform_later` call commented out, so it never actually notifies the recorder today. This app's `stop` really enqueues the job.
 
 **Deviation from Rails' `courts#index`**: the Rails controller returns bare positional arrays (`[[1, "Court 1", "court-1"], ...]`) for the no-slug case, via `Court.limit(50).pluck(...)`, which is inconsistent with every other endpoint's object-shaped JSON. That looks like an artifact of using `pluck` rather than an intentional contract — nothing consumes this API yet (the frontend isn't wired up), so there's no compatibility reason to replicate it. This app returns `{ id, name, slug }` objects in both the filtered and unfiltered cases instead.
 
@@ -62,6 +73,10 @@ npm run migration:generate -- src/migrations/SomeName   # after changing entitie
 | `PORT` | HTTP port (default `3000`) |
 | `CORS_ORIGIN` | Allowed CORS origin (default `http://localhost:5173`, matching the Vite frontend) |
 | `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_BUCKET` | Used to presign session clip downloads. Presigning is a local signature computation (no network call), so any non-empty values work for local dev/tests without real AWS access |
+| `REDIS_URL` | BullMQ connection, for the clip-request queue |
+| `JWT_SECRET` | Signs/verifies the recorder ↔ API JWTs |
+| `RECORDER_URL` | External recorder service base URL (default `http://localhost:4000`) |
+| `APP_BASE_URL` | Used to build the `callback_url` sent to the recorder |
 
 ## Scripts
 
@@ -84,11 +99,15 @@ src/
   facilities/       GET /v1/facilities, /v1/facilities/:id
   courts/           GET /v1/courts, /v1/courts/:id
   sessions/         POST /v1/sessions, GET /:id, POST /:id/stop, GET /:id/presigned_download
-  common/s3/        S3 presigner service, shared by sessions (and later payments/recorders as needed)
+  recorders/        POST /v1/recorders/heartbeat, /webhook (JWT-guarded)
+  jobs/clip-request/  BullMQ processor enqueued by sessions.stop()
+  common/s3/              S3 presigner service
+  common/guards/          RecorderAuthGuard
+  common/recorder-client/ outbound HTTP client to the recorder service
   data-source.ts    standalone TypeORM DataSource used by the migration CLI
   configure-app.ts  shared app setup (global prefix, CORS, validation) used by main.ts and e2e tests
   app.module.ts
   main.ts
 ```
 
-Remaining modules (`recorders`, `payments`, `stripe-webhooks`) land in later phases — see the migration plan.
+Remaining modules (`payments`, `stripe-webhooks`) land in later phases — see the migration plan.

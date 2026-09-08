@@ -1,7 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { getQueueToken } from '@nestjs/bullmq';
 import { Repository } from 'typeorm';
+import { Queue } from 'bullmq';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module.js';
@@ -9,12 +11,14 @@ import { configureApp } from '../src/configure-app.js';
 import { Facility } from '../src/entities/facility.entity.js';
 import { Court } from '../src/entities/court.entity.js';
 import { Session } from '../src/entities/session.entity.js';
+import { CLIP_REQUEST_QUEUE } from '../src/jobs/clip-request/clip-request.constants.js';
 
 describe('SessionsController (e2e)', () => {
   let app: INestApplication<App>;
   let facilities: Repository<Facility>;
   let courts: Repository<Court>;
   let sessions: Repository<Session>;
+  let clipRequestQueue: Queue;
   let facility: Facility;
   let court: Court;
 
@@ -29,6 +33,7 @@ describe('SessionsController (e2e)', () => {
     facilities = moduleFixture.get(getRepositoryToken(Facility));
     courts = moduleFixture.get(getRepositoryToken(Court));
     sessions = moduleFixture.get(getRepositoryToken(Session));
+    clipRequestQueue = moduleFixture.get(getQueueToken(CLIP_REQUEST_QUEUE));
 
     const existingCourt = await courts.findOne({
       where: { slug: 'e2e-sessions-court' },
@@ -109,6 +114,16 @@ describe('SessionsController (e2e)', () => {
       .post(`/v1/sessions/${id}/stop`)
       .expect(200);
     expect(stopped.body).toEqual({ id, status: 'processing', ok: true });
+
+    // stop() now actually enqueues a clip request (Phase 2 left this as a
+    // no-op on purpose; Phase 3 wires it up).
+    const jobs = await clipRequestQueue.getJobs([
+      'waiting',
+      'active',
+      'completed',
+      'failed',
+    ]);
+    expect(jobs.some((job) => job.data.sessionId === id)).toBe(true);
 
     await sessions.update({ id }, { s3Key: `sessions/${id}/clip.mp4` });
 
