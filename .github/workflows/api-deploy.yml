@@ -1,0 +1,65 @@
+name: api Deploy
+
+# Manual-only for now: there's no server to deploy to yet (see
+# plans/nestjs-migration.md, Phase 6), so this doesn't auto-trigger on push
+# to main — that would silently publish a real image to GHCR on every merge
+# before anyone's ready to deploy it. Once a server exists, add a
+# `push: branches: [main], paths: [api/**]` trigger back in.
+#
+# Needs three repo secrets that don't exist yet — DEPLOY_HOST, DEPLOY_USER,
+# DEPLOY_SSH_KEY — and a target server with docker-compose.yml + .env
+# already in place (see api/README.md's Deployment section). Until those
+# are configured, a manually triggered run will fail at the SSH step, which
+# is harmless — the image still gets built and pushed either way.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: api-deploy
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.tag.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: tag
+        run: echo "image=ghcr.io/${{ github.repository }}/api:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: api
+          push: true
+          tags: |
+            ${{ steps.tag.outputs.image }}
+            ghcr.io/${{ github.repository }}/api:latest
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/tdog-api
+            export IMAGE=${{ needs.build-and-push.outputs.image }}
+            docker compose pull
+            docker compose up -d
+            docker image prune -f
