@@ -62,19 +62,33 @@ describe('RecorderClientService', () => {
   });
 
   it('defaults RECORDER_URL to http://localhost:4000 when unset', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(new Response(null, { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
+    // ConfigService.get() falls back to real process.env when a key isn't
+    // in the object passed to its constructor, so this has to force the
+    // env var unset too — CI sets RECORDER_URL for the whole job.
+    const original = process.env.RECORDER_URL;
+    delete process.env.RECORDER_URL;
 
-    const service = new RecorderClientService(
-      new ConfigService({}),
-      new JwtService({ secret: 'test-secret' }),
-    );
+    try {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(new Response(null, { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
 
-    await service.requestClip(buildSession());
+      const service = new RecorderClientService(
+        new ConfigService({}),
+        new JwtService({ secret: 'test-secret' }),
+      );
 
-    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:4000/api/clip');
+      await service.requestClip(buildSession());
+
+      expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:4000/api/clip');
+    } finally {
+      if (original === undefined) {
+        delete process.env.RECORDER_URL;
+      } else {
+        process.env.RECORDER_URL = original;
+      }
+    }
   });
 
   it('sends null rtsp_url when the court has no camera', async () => {
