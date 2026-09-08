@@ -2,7 +2,7 @@
 
 NestJS rewrite of the T-Dog API, replacing `../api` (Rails). See [`../plans/nestjs-migration.md`](../plans/nestjs-migration.md) for the full migration plan, decisions, and phase-by-phase status.
 
-**Current status: Phase 4 — all planned endpoints are implemented.** Phase 5 (parity test pass) and Phase 6 (cutover) are still to come. Don't point the frontend at this yet.
+**Current status: Phase 5 — parity audit complete, no gaps found.** Every Rails controller test has an equal-or-stronger Nest equivalent (see `plans/nestjs-migration.md`'s "Parity audit findings"). Phase 6 (cutover) is the only thing left. Don't point the frontend at this yet.
 
 ## API (implemented so far, all under `/v1`)
 

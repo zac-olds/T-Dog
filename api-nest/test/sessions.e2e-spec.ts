@@ -133,6 +133,9 @@ describe('SessionsController (e2e)', () => {
     expect(typeof presigned.body.url).toBe('string');
     expect(presigned.body.url).toContain('clip.mp4');
     expect(presigned.body.url).toContain('X-Amz-Signature');
+    // Matches Rails' own test assertion for this endpoint
+    // (test/controllers/v1/sessions_controller_test.rb).
+    expect(presigned.body.url).toContain('amazonaws.com');
   });
 
   it('GET /v1/sessions/:id 404s for an unknown id', async () => {
