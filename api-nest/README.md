@@ -125,4 +125,22 @@ src/
   main.ts
 ```
 
-All planned modules are implemented — see the migration plan for what's left (parity test pass, cutover).
+All planned modules are implemented — see the migration plan for what's left (cutover).
+
+## Deployment
+
+Docker Compose on a single server, replacing Rails' Kamal setup (see the migration plan's "Deployment" decision — Kamal was never actually configured for a real server, so there was nothing working to preserve). One `app` service handles both HTTP and BullMQ job processing in the same process — there's no separate worker container, matching Rails' own default of running Solid Queue inside the Puma process rather than a dedicated machine.
+
+**Stack**: `docker-compose.yml` defines `postgres`, `redis`, `app`, and `caddy` (via [caddy-docker-proxy](https://github.com/lucaslorentz/caddy-docker-proxy), which watches Docker labels and automatically reverse-proxies + issues a Let's Encrypt cert for whatever `APP_DOMAIN` is set to — no hand-written Caddyfile needed).
+
+**One-time server setup** (not automated — do this once per server):
+1. Install Docker + the Compose plugin.
+2. Create `/opt/tdog-api/` on the server, copy `docker-compose.yml` there.
+3. Create `/opt/tdog-api/.env` with real values for every variable in `.env.example`, including the three deploy-only ones at the bottom (`POSTGRES_PASSWORD`, `APP_DOMAIN`, `IMAGE`).
+4. Open ports 80/443 (Caddy/ACME) — port 3000 is intentionally loopback-only (see the `ports:` comment in `docker-compose.yml`), reachable for debugging only via an SSH tunnel.
+
+**CI/CD**: `.github/workflows/api-nest-deploy.yml` builds the image, pushes it to GHCR, then SSHes into the server to `docker compose pull && docker compose up -d`. It triggers on push to `main` (once `api-nest/` actually lives there) or manually via `workflow_dispatch`. It needs three repo secrets that don't exist yet: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`. Until they're set, a triggered run just fails at the SSH step — harmless, not destructive.
+
+**Accepted tradeoffs** (same as the original Kamal-vs-Compose decision): brief downtime per deploy (container restart, not a health-checked traffic flip) and no automatic rollback on a bad deploy.
+
+**Verified locally**: built the image, ran the full compose stack (`postgres` + `redis` + `app`) end-to-end — migrations run automatically on container start via the `CMD`, the app connects to both dependencies over the compose network, serves real traffic on the loopback-bound port, and survives a restart (migrations are idempotent — already-applied ones are just skipped). Along the way, found and fixed a real bug: the Dockerfile didn't copy `tsconfig.json` into the runtime image, so `tsx`/esbuild couldn't see `experimentalDecorators: true` and silently fell back to native stage-3 decorator semantics, which broke every TypeORM entity decorator.

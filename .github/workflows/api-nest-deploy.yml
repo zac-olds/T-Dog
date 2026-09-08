@@ -1,0 +1,64 @@
+name: api-nest Deploy
+
+# Gated to main + manual dispatch only, and api-nest/ doesn't exist on main
+# yet — this can't accidentally fire from a phase branch. It also needs
+# repo secrets (DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY) and a target
+# server with docker-compose.yml + .env already in place — see
+# api-nest/README.md's Deployment section. Until those are configured,
+# a triggered run will just fail at the SSH step, which is harmless.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'api-nest/**'
+  workflow_dispatch:
+
+concurrency:
+  group: api-nest-deploy
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.tag.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: tag
+        run: echo "image=ghcr.io/${{ github.repository }}/api:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: api-nest
+          push: true
+          tags: |
+            ${{ steps.tag.outputs.image }}
+            ghcr.io/${{ github.repository }}/api:latest
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/tdog-api
+            export IMAGE=${{ needs.build-and-push.outputs.image }}
+            docker compose pull
+            docker compose up -d
+            docker image prune -f
