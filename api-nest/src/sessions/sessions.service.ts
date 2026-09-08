@@ -95,6 +95,7 @@ export class SessionsService {
       durationS: session.durationS,
       s3Key: session.s3Key,
       token: session.token,
+      paid: session.paid,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
     };

@@ -10,6 +10,8 @@ import { FacilitiesModule } from './facilities/facilities.module.js';
 import { CourtsModule } from './courts/courts.module.js';
 import { SessionsModule } from './sessions/sessions.module.js';
 import { RecordersModule } from './recorders/recorders.module.js';
+import { PaymentsModule } from './payments/payments.module.js';
+import { StripeWebhooksModule } from './stripe-webhooks/stripe-webhooks.module.js';
 import { Facility } from './entities/facility.entity.js';
 import { Court } from './entities/court.entity.js';
 import { Camera } from './entities/camera.entity.js';
@@ -53,6 +55,8 @@ import { Session } from './entities/session.entity.js';
     CourtsModule,
     SessionsModule,
     RecordersModule,
+    PaymentsModule,
+    StripeWebhooksModule,
   ],
 })
 export class AppModule {}

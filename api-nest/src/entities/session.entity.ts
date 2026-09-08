@@ -45,6 +45,11 @@ export class Session {
   @Column({ type: 'varchar', nullable: true })
   token: string | null;
 
+  // Added in Phase 4 — Rails has no equivalent column; nothing tracked
+  // payment state at all before this, see plans/nestjs-migration.md.
+  @Column({ type: 'boolean', default: false })
+  paid: boolean;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 

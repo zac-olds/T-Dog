@@ -2,7 +2,7 @@
 
 NestJS rewrite of the T-Dog API, replacing `../api` (Rails). See [`../plans/nestjs-migration.md`](../plans/nestjs-migration.md) for the full migration plan, decisions, and phase-by-phase status.
 
-**Current status: Phase 3.** `facilities`, `courts`, `sessions`, and `recorders` are implemented; `payments`/Stripe webhooks are still to come. Don't point the frontend at this yet.
+**Current status: Phase 4 — all planned endpoints are implemented.** Phase 5 (parity test pass) and Phase 6 (cutover) are still to come. Don't point the frontend at this yet.
 
 ## API (implemented so far, all under `/v1`)
 
@@ -19,8 +19,18 @@ NestJS rewrite of the T-Dog API, replacing `../api` (Rails). See [`../plans/nest
 | `GET /sessions/:id/presigned_download` | Presigned S3 GET URL if `s3Key` is set, else 404 |
 | `POST /recorders/heartbeat` | Requires a recorder JWT (`Authorization: Bearer <token>`, `role: "recorder"`). Returns `{ ok: true, time }` (200) |
 | `POST /recorders/webhook` | Requires a recorder JWT. Body (external contract, snake_case): `{ event, session_id?, s3_key?, duration_s? }`. On `event: "clip_uploaded"`, updates the session (`status: "delivered"`, `s3Key`, `durationS`) — 404 if the session doesn't exist. Other event values are accepted as no-ops (200), matching Rails' `case` statement |
+| `POST /payments/checkout` | Body `{ sessionId }`. Creates a Stripe Checkout session for that recording session and returns `{ url }` (200). 404 if the session doesn't exist |
+| `POST /webhooks/stripe` | Verifies the Stripe signature (raw body required — see below). On `checkout.session.completed`, marks the linked session `paid: true`. Empty 200 body on success (matching Rails' `head :ok`), 400 on a bad/missing signature |
 
 `GET /health` is the one route not under `/v1` (ops check, not part of the API contract).
+
+## Billing (Phase 4)
+
+- **`POST /payments/checkout` replaces Rails' `/payments/billing/checkout`** — the extra `billing` path segment looked like routing-DSL leftover (a sub-action nested under `payments` for no clear reason) rather than an intentional shape, so it's simplified since nothing depends on the old path.
+- **Real session linkage — this is new functionality, not a port.** Rails' `checkout` action never took a session/court parameter at all and had no way to know which recording a payment was for; its Stripe webhook handler extracted the completed checkout object and then did nothing with it. This app requires `sessionId` on checkout, stores it in the Stripe session's `metadata.session_id`, and the webhook uses that to mark the right session `paid: true` — closing a gap that didn't have a partial implementation to extend, only a stub.
+- **New column**: `sessions.paid` (boolean, default `false`) — added by a real migration (`AddPaidToSessions`), since Rails has no equivalent column anywhere.
+- **Raw body requirement**: Stripe signature verification needs the exact raw request bytes, not Nest's parsed JSON body. Enabled via `NestFactory.create(AppModule, { rawBody: true })` in `main.ts`, consumed via `req.rawBody` in `StripeWebhooksController`. Tests that hit this route must also pass `{ rawBody: true }` when creating the test app — see `test/stripe-webhooks.e2e-spec.ts`.
+- **Stripe SDK note**: `checkout.sessions.create` is a real network call to Stripe, so it can't be exercised end-to-end in tests without real credentials — `test/payments.e2e-spec.ts` mocks the `stripe` package for that reason. Webhook signature verification (`stripe.webhooks.constructEvent`) is a local HMAC computation with no network call, so `test/stripe-webhooks.e2e-spec.ts` tests it for real, including a hand-computed valid signature.
 
 ## Recorder integration (Phase 3)
 
@@ -76,7 +86,10 @@ npm run migration:generate -- src/migrations/SomeName   # after changing entitie
 | `REDIS_URL` | BullMQ connection, for the clip-request queue |
 | `JWT_SECRET` | Signs/verifies the recorder ↔ API JWTs |
 | `RECORDER_URL` | External recorder service base URL (default `http://localhost:4000`) |
-| `APP_BASE_URL` | Used to build the `callback_url` sent to the recorder |
+| `APP_BASE_URL` | Used to build the `callback_url` sent to the recorder, and Stripe's `success_url`/`cancel_url` |
+| `STRIPE_SECRET_KEY` | Stripe API key. Only `POST /payments/checkout` needs this to actually work (a real network call); webhook verification doesn't need a real key |
+| `STRIPE_PRICE_ID` | Price used for the checkout line item |
+| `STRIPE_WEBHOOK_SECRET` | Verifies incoming Stripe webhook signatures |
 
 ## Scripts
 
@@ -100,6 +113,8 @@ src/
   courts/           GET /v1/courts, /v1/courts/:id
   sessions/         POST /v1/sessions, GET /:id, POST /:id/stop, GET /:id/presigned_download
   recorders/        POST /v1/recorders/heartbeat, /webhook (JWT-guarded)
+  payments/         POST /v1/payments/checkout
+  stripe-webhooks/  POST /v1/webhooks/stripe
   jobs/clip-request/  BullMQ processor enqueued by sessions.stop()
   common/s3/              S3 presigner service
   common/guards/          RecorderAuthGuard
@@ -110,4 +125,4 @@ src/
   main.ts
 ```
 
-Remaining modules (`payments`, `stripe-webhooks`) land in later phases — see the migration plan.
+All planned modules are implemented — see the migration plan for what's left (parity test pass, cutover).
