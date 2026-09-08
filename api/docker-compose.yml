@@ -1,0 +1,67 @@
+
+# Production/deploy compose stack for the T-Dog API.
+#
+# One `app` service handles both HTTP requests and BullMQ job processing in
+# the same process (the ClipRequestProcessor runs in-process — there's no
+# separate worker binary) — this mirrors Rails' own default of running
+# Solid Queue inside the Puma process rather than a dedicated machine.
+#
+# TLS/routing is handled by caddy-docker-proxy: it watches Docker labels and
+# automatically reverse-proxies + issues a Let's Encrypt cert for
+# APP_DOMAIN. Fill in the real values in .env before deploying — see
+# .env.example and README.md's Deployment section.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tdog
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: tdog_api_production
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [internal]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks: [internal]
+
+  app:
+    image: ${IMAGE:-ghcr.io/your-org/t-dog/api:latest}
+    restart: unless-stopped
+    env_file: .env
+    depends_on: [postgres, redis]
+    networks: [internal, web]
+    ports:
+      # Loopback-only direct access for debugging over an SSH tunnel —
+      # public traffic goes through caddy on 80/443, not this port.
+      - '127.0.0.1:3000:3000'
+    labels:
+      caddy: ${APP_DOMAIN:?set APP_DOMAIN in .env, e.g. api.example.com}
+      caddy.reverse_proxy: '{{upstreams 3000}}'
+
+  caddy:
+    image: lucaslorentz/caddy-docker-proxy:2-alpine
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      CADDY_INGRESS_NETWORKS: web
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - caddy_data:/data
+    networks: [web]
+
+networks:
+  internal:
+  web:
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:

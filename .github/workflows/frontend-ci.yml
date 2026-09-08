@@ -1,0 +1,24 @@
+name: frontend CI
+
+# The API has its own workflow now (api-ci.yml) — this one only builds the
+# Vite/React frontend. It used to also set up Ruby/Rails here before the
+# NestJS migration (see plans/nestjs-migration.md).
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.12
+          cache: 'npm'
+
+      - run: npm install
+      - run: npm run build
