@@ -1,55 +1,88 @@
-# Spike: Reolink software/API as a replacement for the Raspberry Pi recorder
+# Spike: camera-to-cloud video pipeline without on-site custom hardware
 
-Status: **draft — ready to hand to whoever has hardware access**
+Status: **design settled through research + discussion, not yet validated against real hardware**
 
 ## Goal
 
-Today's (planned) architecture has a Raspberry Pi running a custom "recorder" service that pulls an RTSP stream from the court's camera, cuts a clip for the session's time window, and uploads it to our own S3 bucket — see `plans/nestjs-migration.md` for how the API's `RecorderClientService`/webhook contract talks to that service.
+Today's (planned) architecture has a Raspberry Pi running a custom "recorder" service that pulls an RTSP stream from a court's camera, cuts a clip for the session's time window, and uploads it to our own S3 bucket — see `plans/nestjs-migration.md` for how the API's `RecorderClientService`/webhook contract talks to that service.
 
-This spike asks a narrower, concrete question than "can we talk to this camera at all": **can Reolink's own software/API do the "get a clip off the camera and into our hands" job well enough that we don't need to write and run our own RTSP-consuming, clip-cutting service?**
+We don't want to run our own on-site hardware-with-custom-software (a Pi we build, deploy, and maintain). This doc lays out the architecture we've settled on to avoid that, why several other options were rejected, and what still needs to be verified against real hardware before committing.
 
-Explicitly **not** in scope: how we serve clips to customers. That's already built (`GET /v1/sessions/:id/presigned_download` in `api/`) and doesn't change no matter how the clip gets into S3 — this spike is only about the upload side.
+Explicitly **not in scope**: how we serve clips to customers. That's already built (`GET /v1/sessions/:id/presigned_download` in `api/`) and doesn't change no matter how the clip gets into S3.
 
-Camera under test: **Reolink RP-PCB8MZ** (Professional Series, PoE, 8MP/4K, 5x optical zoom).
+Camera under test: **Reolink RP-PCB8MZ** (PoE) / **RP-WCB8MZ** (WiFi sibling, same 8MP/5x-zoom spec) — see the recommended architecture below for why we're now leaning WiFi despite PoE being more reliable in isolation.
 
-## What we already know (confirmed via Reolink's product page + community sources — not yet verified against real hardware)
+## Recommended architecture
 
-- **Confirmed protocol support** (from the official spec sheet): RTSP, ONVIF, HTTP/HTTPS, UPnP, DDNS, P2P, FTP. So the camera itself isn't the limiting factor for local API access — it has one.
-- **Local HTTP API exists**: JSON-over-HTTP POST to `/cgi-bin/api.cgi`, covering auth, system/network config, video/encoding settings, recording search & playback, PTZ, and AI/motion detection. This is Reolink's standard camera API, not something specific to this model.
-- **The critical open risk**: community reports (Reolink community forum, GitHub projects reverse-engineering the API) say the `Search` command (list recordings by time range — metadata only) works broadly, but actually **downloading** the video file itself is inconsistent across models and firmware versions — on some devices there is reportedly no working network path to the actual video bytes at all (CGI Download, RTSP VOD, and ONVIF Replay have each been reported broken on specific models). This has **not** been checked against the RP-PCB8MZ specifically, and needs to be.
-- **No official, current API documentation found.** The only Reolink-published CGI reference we found is a legacy PDF versioned 1.61 from 2017. Everything more current is community-reverse-engineered (e.g. `mnpg/Reolink_api_documentations`, `verheesj/reolink-api` on GitHub, various Python wrapper packages on PyPI). This means whatever we build against this API is **unsupported and undocumented by Reolink** — a real maintenance/reliability risk independent of whether it technically works today.
-- **Reolink Cloud (the "My Cloud" subscription service) is a dead end for this purpose**: it stores motion-triggered clips on Reolink's own servers, but we found no evidence of a public third-party API to programmatically list or download from it — access appears to be limited to the Reolink mobile app and web UI. Worth one direct confirmation from Reolink (see Step 0 below) before fully ruling it out, but don't assume it's viable.
+**On-site, per court/facility:**
+- The camera (Reolink, WiFi model) — configured once (recording schedule, FTPS destination), then operates autonomously.
+- A dedicated WiFi access point placed close to the court, wired back to the facility's existing network. Off-the-shelf hardware, configured once via its own app, no custom software.
+- One cable run from that AP to existing network infrastructure (often already in place at the facility).
 
-## Questions this spike needs to answer
+**Recording**: continuous or fixed-interval recording (e.g. every 60 seconds), **not** motion-triggered (motion detection had a reported reliability gap) and **not** dependent on an on-demand "start recording" API call. The camera is always capturing; the session start/stop API calls don't command the camera at all — they just record timestamps.
 
-1. **Does Search actually return usable results**, and does **Download actually return real video bytes**, on the RP-PCB8MZ's current firmware? (This is the single most important question — everything else is moot if this doesn't work.)
-2. If Download works: what format/codec/container do we get back, and does it need transcoding before we can serve it to customers as-is, or does it just drop into our existing S3 pipeline unchanged?
-3. Can we reliably get a clip for a **specific time window** (a session's start/end), not just "whatever the camera happened to record"? Does that require configuring continuous recording, motion-triggered recording, or an on-demand recording command — and does the mode we pick affect SD card retention/overwrite timing enough to risk losing the window before we fetch it?
-4. **Does this remove the need for a local device at all**, or just simplify what it has to do? Two sub-cases:
-   - If the local API is only reachable on the camera's LAN: something still has to run there (a Pi or similar) — but its job becomes "call Search + Download over plain HTTP" instead of "consume RTSP and run ffmpeg," which is a real simplification even without eliminating the Pi.
-   - If the camera can be safely made reachable from our cloud backend (DDNS + port forward, or a lightweight VPN) — could our own NestJS API call Search/Download directly, eliminating the Pi entirely? What's the actual security exposure of doing that (this echoes the port-forwarding security discussion already had for T-Dog generally — recheck it specifically for this model/firmware, since exposed HTTP APIs on IoT cameras are a known attack target).
-5. **Auth & credential handling**: what does the local API require (username/password, session token, per-device secret?), and how would we store/rotate that per camera across many court installations.
-6. **Get one explicit answer from Reolink** (support ticket or their developer/partner channel, not just community forums) on whether there's any officially supported path — local or cloud — for third-party clip retrieval on this model. Even a "no" is useful: it tells us we're building on an unsupported integration either way.
+**Upload**: FTPS (encrypted, outbound-only from the camera — no port-forwarding or inbound exposure needed). This is an officially documented, first-class Reolink feature — not a reverse-engineered one.
 
-## Suggested investigation steps (needs a real RP-PCB8MZ on a real network)
+**Upload destination**: a managed FTPS-to-S3 gateway. AWS Transfer Family is the reference option (~$216/month per always-on protocol endpoint, shared across every camera using it, + $0.04/GB transferred); cheaper third-party alternatives (Files.com, ftpgrid.com — the latter markets itself specifically for Reolink) should be priced out before committing.
 
-This can't be resolved from documentation alone — the community reports are inconsistent enough (some cameras can download recordings, some can't) that it has to be tested against this exact model and firmware version.
+**Retention & legal narrowing**: uploads land in a staging S3 bucket/prefix with an **S3 Lifecycle Policy** that auto-deletes everything after a few hours — no custom cleanup code. A lightweight S3-event-triggered Lambda matches each upload's timestamp against known session windows (from our own `sessions` data) and **copies** matching segments into permanent storage. Everything else — footage of anyone who isn't part of a paid, consented session — simply expires automatically within hours. This narrows legal exposure by construction: nothing is retained or served beyond what an explicit booking actually covers.
 
-0. Ask Reolink support/developer contacts directly whether there's an officially supported API path (local or cloud) for third-party clip retrieval on the RP-PCB8MZ. Get this in writing regardless of what step 1 finds.
-1. Get the camera on a test network, note its firmware version, and hit `/cgi-bin/api.cgi` directly (curl/Postman is fine) to test, in order: `Login` → `GetAbility` (confirms what this specific device claims to support) → configure/trigger a short recording → `Search` (confirm it lists that recording) → `Download` (confirm it returns real video bytes, not an error).
-2. If Download works, save a sample clip and confirm it plays / check its codec — that determines whether our existing S3 + presigned-download flow can serve it unmodified.
-3. Test whether DDNS + port forward (or whatever remote-access method Reolink recommends) makes the local API reachable from outside the LAN, and get a rough read on what that exposes.
-4. Write up findings against the numbered questions above and make a go/no-go call.
+**Serving to customers**: unchanged. `GET /v1/sessions/:id/presigned_download`, already built.
+
+**Monitoring**: a lightweight health check tracking the last successful upload timestamp per camera, alerting if one goes quiet during a facility's open hours. No camera has zero failure rate — the goal is catching a dead camera fast, not preventing failure entirely.
+
+## Final bill of materials — what's genuinely eliminated vs. what's unavoidable
+
+The distinction that matters isn't "does any hardware exist" (a camera is inherently hardware) — it's "does anything run custom software we have to build, deploy, and keep alive." That's what made the Pi a problem, and it's the thing actually eliminated here.
+
+| Needed | Not needed |
+|---|---|
+| The camera itself | Raspberry Pi |
+| A WiFi access point (off-the-shelf, configure-once) | Any on-site custom software |
+| A cable from the AP to existing network infra | NVR/DVR box |
+| AWS Transfer Family (or similar managed gateway) | Anything needing remote SSH access to debug |
+| S3 (staging bucket w/ lifecycle policy + permanent bucket) | Anything needing a physical site visit to fix |
+| A Lambda function (matches uploads to sessions) | |
+| Our existing NestJS API (unchanged) | |
+
+Everything with actual logic in it (matching, retention, serving) runs as software in our own cloud — the same kind of engineering we already do, triggered by an S3 event instead of an HTTP request.
+
+## Why we rejected the alternatives we looked at
+
+- **On-demand recording via the camera's API** (`SetManualRec`/`SetRecV20`): exists, but it's part of Reolink's unofficial, reverse-engineered command set, with real reports of unreliable behavior (a Home Assistant integration thread reports the manual-record toggle misbehaving). It would also introduce a real-time dependency — if the "start recording" call is slow or fails, we lose the first seconds of a session. Confirmed via Eagle Eye Networks' actual API (`/exports`, `/downloads` with start-time/end-time parameters) that **this isn't how professional camera platforms work anyway** — even enterprise-grade systems record continuously and retrieve by time range, they don't trigger recording on command. We're following that same proven pattern, just building the retrieval/matching layer ourselves instead of paying a platform for it.
+- **Reolink Cloud ("My Cloud" subscription)**: stores motion-triggered clips on Reolink's own servers, but there's no public third-party API to retrieve from it — access is app/web-UI only. Dead end for this purpose.
+- **Reolink's local CGI `Download` command** (pulling a specific recorded file by name, as opposed to FTPS push): community reports say this is inconsistent across models/firmware — some devices have no working path to the actual video bytes at all. Superseded by FTPS, which is officially documented and doesn't have this risk.
+- **Wiring every camera directly (PoE) instead of using WiFi + local access points**: PoE avoids WiFi-specific reliability issues entirely, but running Ethernet cable throughout an existing facility is expensive, slow, and disruptive — often the largest line-item cost in a real installation. The WiFi-to-nearby-dedicated-AP design gets most of the reliability benefit (the documented Reolink WiFi complaints are about weak/distant signal and facility-network quirks, both of which a dedicated nearby AP directly addresses) without the cabling burden.
+- **Enterprise camera platforms as the primary plan** (Eagle Eye Networks, Verkada, Cisco Meraki MV): all viable, all use the same continuous-record/retrieve-by-time-range pattern with an officially supported API instead of Reolink's FTPS. Verkada ($699–$5,299/camera hardware + $199–$1,799/camera/year) and Meraki (~$180–330/camera/year license + hardware) are priced for enterprise security budgets — likely overkill here. Eagle Eye Networks (~$5–50/camera/month) is the closest cost fit and is kept as **Plan B** if the Reolink+FTPS approach doesn't hold up in testing.
+
+## Legal — explicit blocking item, not a footnote
+
+Not legal advice; get real counsel before launch. Key considerations surfaced during this investigation:
+- **Video vs. audio are treated very differently.** Many US states require *all* parties' consent for audio recording (two-party/all-party consent states), a much stricter bar than video alone. Reolink cameras have a built-in mic — **disable audio recording** (or handle it as a separate, explicit consent) unless the product actually needs it.
+- **Who's captured matters, not just the paying customer.** A booked session likely includes teammates, opponents, spectators, kids — people who never agreed to anything. The retention architecture above (only footage matching a paid session is ever kept beyond a few hours) is the mitigation: everyone else's footage evaporates automatically rather than being retained or monetized.
+- **Minors** raise the sensitivity further if used for youth sports.
+- **GDPR/international regimes** apply if we ever serve EU customers/venues — video of identifiable people is personal data there, with a much larger compliance framework attached.
+- Established practice among companies already doing sports recording/broadcasting for youth/amateur leagues (this isn't a novel business model) generally includes: visible venue signage, a recording-consent clause in the facility's own booking/membership terms, audio disabled by default, recording scoped tightly to the paid window, and a clear retention/deletion policy — which is exactly the shape of the architecture above.
+
+## Open questions the spike must still verify against real hardware
+
+1. **Does FTPS upload on a fixed interval actually work reliably** on the RP-WCB8MZ/RP-PCB8MZ's current firmware, over multiple days (not a quick demo)? Motion-triggered FTP had a reported reliability complaint — confirm interval-based upload doesn't share it.
+2. **What happens when an upload attempt fails mid-transfer** (e.g. a brief WiFi hiccup)? Does the camera retry, buffer to its SD card and catch up, or silently drop that segment? This determines how much WiFi reliability actually matters in practice — a retry/buffer behavior means an occasional drop costs a few seconds, not a whole session.
+3. **Does a dedicated, nearby access point actually resolve the documented WiFi complaints** (weak signal, offline incidents), tested with real throughput under continuous-upload load — not assumed from specs.
+4. **Confirm the filename/timestamp convention** Reolink's FTPS client uses, so the Lambda matching logic can reliably map an uploaded file to a session window.
+5. **Size real bandwidth/storage cost** per camera for continuous upload — consider a lower-resolution sub-stream if full 4K is unnecessarily expensive to run all day.
+6. **Price a cheaper FTPS-to-S3 gateway than AWS Transfer Family** (Files.com, ftpgrid.com, others) before committing to the ~$216/month baseline.
+7. **Legal review**, per above — blocking, not parallelizable with the technical work.
 
 ## Deliverable
 
-A short findings write-up (this doc, updated with an "Outcome" section) recommending one of:
-- **Adopt**: local API reliably delivers clips; replace the Pi's RTSP/ffmpeg logic with a much simpler HTTP-polling client (still runs locally, or possibly runs centrally if remote access checks out).
-- **Partial**: works well enough for some things (e.g. confirms recording happened) but not reliable enough to trust for actual clip delivery — keep the RTSP-based recorder as the source of truth.
-- **Reject**: Download doesn't reliably work on this model/firmware, or Reolink confirms there's no supported path — stick with the existing RTSP + Pi design.
+A findings write-up (this doc, updated with an "Outcome" section) recommending one of:
+- **Adopt**: the architecture above holds up under multi-day real-world testing — build it.
+- **Partial**: works but with caveats (e.g. WiFi+AP isn't reliable enough, fall back to PoE for courts where cabling is feasible) — mixed rollout.
+- **Reject**: reliability doesn't hold up even with a dedicated AP and retry/buffer behavior, or legal counsel rules out the retention approach — fall back to Eagle Eye Networks (Plan B) instead of building this ourselves.
 
-Not a deliverable: production code. If the API checks out, a follow-up implementation would replace `RecorderClientService`'s counterpart (the external recorder) — that's separate, larger work, not part of this spike.
+Not a deliverable: production code. This is validation work; implementation is separate, larger follow-up work.
 
 ## Time-box
 
-Suggest 2–3 days, gated entirely on having a physical RP-PCB8MZ on a test network — most of that is steps 0–2 above, which can't be shortened by more research since the answer isn't in any documentation we could find.
+Suggest 3–5 days given the addition of a real multi-day soak test (up from the original 2–3), gated on having real hardware (camera + access point) on a test network. Legal review can run in parallel with the technical validation.
