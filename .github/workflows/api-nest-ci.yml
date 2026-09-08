@@ -53,6 +53,9 @@ jobs:
       JWT_SECRET: test-jwt-secret
       RECORDER_URL: http://localhost:4999
       APP_BASE_URL: http://localhost:3000
+      STRIPE_SECRET_KEY: sk_test_fake
+      STRIPE_PRICE_ID: price_fake
+      STRIPE_WEBHOOK_SECRET: whsec_fake
 
     steps:
       - uses: actions/checkout@v4
